@@ -8,6 +8,7 @@
 #include "WeReadBrowse.h"
 #include "WeReadHttpClient.h"
 #include "WeReadProtocol.h"
+#include "WeReadReadingTime.h"
 #include "WeReadStore.h"
 
 namespace WeReadClient {
@@ -50,8 +51,11 @@ struct ProgressSyncInput {
   uint32_t localTocIndex = 0;
   uint32_t localOffset = 0;
   LocalOffsetBasis localOffsetBasis = LocalOffsetBasis::None;
+  // Whole seconds of local reading not yet credited to WeRead. The client sends them as `rt` on the
+  // report request only, and the caller advances its watermark only after a verified upload.
+  uint32_t pendingReadSeconds = 0;
 };
-static_assert(sizeof(ProgressSyncInput) == 16);
+static_assert(sizeof(ProgressSyncInput) == 20);
 
 enum class ProgressSyncMode : uint8_t {
   Compare,
@@ -113,6 +117,10 @@ class Operation {
   const char* qrUrl() const { return url_; }
   const char* finalPath() const { return outputPath_.c_str(); }
   const ProgressSyncResult& progressSyncResult() const { return progressSyncResult_; }
+  // Whole seconds of reading time the server has accepted so far in this sync. Valid even when the
+  // job later fails (for example during read-back verification), because each accepted report is
+  // already credited; callers advance their watermark by exactly this amount.
+  uint32_t acceptedReadSeconds() const { return timeSentSeconds_; }
   bool active() const;
   bool authenticating() const;
   bool needsCoverConversionScratch() const { return coverConversionNeedsScratch(phase_, progressStage_); }
@@ -406,6 +414,11 @@ class Operation {
   uint8_t chapterResponseAttempts_ = 0;
   uint8_t coverAttempts_ = 0;
   uint8_t coverRedirects_ = 0;
+  // Reading-time upload state. Both counters are bounded by kMaxReportsPerSync * kMaxSecondsPerReport
+  // (14400), so 16 bits suffice; the Operation size budget below is tight and enforced by static_assert.
+  uint16_t timeRemainingSeconds_ = 0;  // still to send in this sync (already capped)
+  uint16_t timeSentSeconds_ = 0;       // accepted by the server
+  bool timeOnlyUpload_ = false;        // position already matched; the report exists only to carry time
   WeReadStore::ImageWorkState coverState_ = WeReadStore::ImageWorkState::Pending;
   bool cancelRequested_ = false;
   WeReadHttpClient::AbortCallback shouldCancel_ = nullptr;

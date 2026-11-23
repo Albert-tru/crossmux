@@ -25,6 +25,7 @@
 #include "ReadingStatsStore.h"
 #include "SilentRestart.h"
 #include "WeReadXhtmlCodec.h"
+#include "WeReadReadingTime.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/EpubReaderUtils.h"
@@ -126,6 +127,7 @@ void WeReadProgressSyncActivity::onEnter() {
 }
 
 void WeReadProgressSyncActivity::onExit() {
+  creditAcceptedReadingTime();  // leaving mid-sync must not forget reports the server already accepted
   operation_.reset();
   Activity::onExit();
   if (!wifiActivated_) return;
@@ -161,6 +163,48 @@ void WeReadProgressSyncActivity::onWifiSelectionComplete(const bool connected) {
   requestUpdate();
 }
 
+// Works out how much locally recorded reading is not yet credited to WeRead. The reader has already
+// ended its session by the time this activity runs, so the stored total includes the latest page turns.
+void WeReadProgressSyncActivity::prepareReadingTime() {
+  readingTimeTracked_ = false;
+  input_.pendingReadSeconds = 0;
+  const ReadingBookStats* stats = READING_STATS.findBook(epubPath_);
+  if (!stats) return;  // not tracked locally (stats disabled for this path): position-only sync
+
+  totalReadSeconds_ = WeReadReadingTime::secondsFromMs(stats->totalReadingMs);
+  if (!WeReadStore::loadReportedTime(bookId_, reportedSeconds_)) {
+    // First time this book syncs time: credit only the recent window, and pin that baseline now so it
+    // does not creep forward on every retry. If it cannot be stored, skip time rather than risk
+    // sending the same seconds twice later.
+    reportedSeconds_ = WeReadReadingTime::initialWatermark(totalReadSeconds_);
+    if (!WeReadStore::saveReportedTime(bookId_, reportedSeconds_)) {
+      LOG_ERR("WRSync", "Could not store reading-time baseline; syncing position only");
+      return;
+    }
+  }
+  readingTimeTracked_ = true;
+  input_.pendingReadSeconds = WeReadReadingTime::owedSeconds(totalReadSeconds_, reportedSeconds_);
+  LOG_INF("WRSync", "reading time: total=%us reported=%us owed=%us", static_cast<unsigned>(totalReadSeconds_),
+          static_cast<unsigned>(reportedSeconds_), static_cast<unsigned>(input_.pendingReadSeconds));
+}
+
+// Advances the watermark by exactly what the server accepted, whether the job completed, failed late
+// (e.g. read-back verification) or was cancelled mid-way. Must run before operation_.reset().
+void WeReadProgressSyncActivity::creditAcceptedReadingTime() {
+  if (!readingTimeTracked_) return;
+  const uint32_t accepted = operation_.acceptedReadSeconds();
+  if (accepted == 0) return;
+  const uint32_t advanced = WeReadReadingTime::advancedWatermark(reportedSeconds_, accepted);
+  if (WeReadStore::saveReportedTime(bookId_, advanced)) {
+    reportedSeconds_ = advanced;
+    creditedThisSync_ += accepted;
+    input_.pendingReadSeconds = WeReadReadingTime::owedSeconds(totalReadSeconds_, reportedSeconds_);
+  } else {
+    // The seconds are already with WeRead; failing to record that means the next sync may resend them.
+    LOG_ERR("WRSync", "Could not advance reading-time watermark by %us", static_cast<unsigned>(accepted));
+  }
+}
+
 void WeReadProgressSyncActivity::startSync() {
   requestUpdateAndWait();
   if (!TimeUtils::isClockValid() && !halClock.syncNow()) {
@@ -170,6 +214,7 @@ void WeReadProgressSyncActivity::startSync() {
     requestUpdate();
     return;
   }
+  prepareReadingTime();
   if (!operation_.beginProgressSync(bookId_, input_, syncMode_)) {
     error_ = operation_.error();
     state_ = error_ == WeReadClient::Error::SessionExpired ? State::LoginRequired : State::Failed;
@@ -194,9 +239,11 @@ void WeReadProgressSyncActivity::advanceSync() {
     case WeReadClient::Operation::Event::QrReady:
       return;
     case WeReadClient::Operation::Event::Cancelled:
+      creditAcceptedReadingTime();
       returnToReader();
       return;
     case WeReadClient::Operation::Event::Failed:
+      creditAcceptedReadingTime();
       error_ = operation_.error();
       state_ = error_ == WeReadClient::Error::SessionExpired ? State::LoginRequired : State::Failed;
       requestUpdate();
@@ -205,6 +252,7 @@ void WeReadProgressSyncActivity::advanceSync() {
       break;
   }
 
+  creditAcceptedReadingTime();
   const auto result = operation_.progressSyncResult();
   outcome_ = result.outcome;
   LOG_INF("WRSync", "sync complete: outcome=%u", static_cast<unsigned>(outcome_));

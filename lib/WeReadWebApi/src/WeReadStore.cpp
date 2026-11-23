@@ -624,6 +624,8 @@ std::string optionsPath(const std::string& bookDir) { return bookDir + "/options
 
 std::string initialProgressPath(const char* bookId) { return bookDirectory(bookId) + "/initial-progress.bin"; }
 
+std::string reportedTimePath(const char* bookId) { return bookDirectory(bookId) + "/reported-time.bin"; }
+
 std::string detailPath(const std::string& bookDir) { return bookDir + "/detail.bin"; }
 
 std::string coverPath(const std::string& bookDir) { return bookDir + "/cover.v2.bmp"; }
@@ -870,6 +872,40 @@ bool clearInitialProgress(const char* bookId) {
   if (Storage.exists(finalPath.c_str())) cleared = Storage.remove(finalPath.c_str());
   if (Storage.exists(partPath.c_str())) cleared = Storage.remove(partPath.c_str()) && cleared;
   return cleared;
+}
+
+bool loadReportedTime(const char* bookId, uint32_t& reportedSeconds) {
+  reportedSeconds = 0;
+  if (!bookId || !bookId[0]) return false;
+  ReportedTime record;
+  HalFile file;
+  if (!Storage.openFileForRead("WR", reportedTimePath(bookId), file) || file.fileSize64() != sizeof(record) ||
+      file.read(&record, sizeof(record)) != static_cast<int>(sizeof(record)) || record.magic != kReportedTimeMagic) {
+    return false;
+  }
+  reportedSeconds = record.reportedSeconds;
+  return true;
+}
+
+bool saveReportedTime(const char* bookId, const uint32_t reportedSeconds) {
+  if (!bookId || !bookId[0]) return false;
+  const std::string bookDir = bookDirectory(bookId);
+  if (!ensureRoot() || !Storage.ensureDirectoryExists(bookDir.c_str())) return false;
+  const std::string finalPath = reportedTimePath(bookId);
+  const std::string partPath = finalPath + ".part";
+  if (Storage.exists(partPath.c_str())) Storage.remove(partPath.c_str());
+  const ReportedTime record{kReportedTimeMagic, reportedSeconds};
+  bool written = false;
+  {
+    HalFile file;
+    written = Storage.openFileForWrite("WR", partPath, file) && file.write(&record, sizeof(record)) == sizeof(record);
+    if (written) file.flush();
+  }
+  if (!written) {
+    if (Storage.exists(partPath.c_str())) Storage.remove(partPath.c_str());
+    return false;
+  }
+  return atomicReplace(partPath, finalPath);
 }
 
 bool openBookDetail(const std::string& bookDir, BookDetailHeader& header, HalFile& file) {

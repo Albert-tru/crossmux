@@ -36,6 +36,21 @@ target_link_libraries(WeReadTouchGeometryTest PRIVATE
 
 gtest_discover_tests(WeReadTouchGeometryTest)
 
+add_executable(WeReadReadingTimeTest
+  WeReadReadingTimeTest.cpp
+)
+
+target_include_directories(WeReadReadingTimeTest PRIVATE
+  ${REPO_ROOT}/lib/WeReadWebApi/src
+)
+
+target_link_libraries(WeReadReadingTimeTest PRIVATE
+  crosspoint_test_common
+  GTest::gtest_main
+)
+
+gtest_discover_tests(WeReadReadingTimeTest)
+
 add_executable(WeReadStoreTest
   WeReadStoreTest.cpp
   ${REPO_ROOT}/freeink-sdk/libs/network/JsonSax/src/StreamingJsonParser.cpp

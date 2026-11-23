@@ -577,7 +577,8 @@ void EpubReaderActivity::openReaderMenu() {
         }
       },
       epub->getTitle(), position.displayPage(), position.totalPages, bookProgressPercent, SETTINGS.orientation,
-      !currentPageFootnotes.empty(), !cachedBookmarks.empty(), CLIPPINGS.hasClippings(), selectedMenuAction);
+      !currentPageFootnotes.empty(), !cachedBookmarks.empty(), CLIPPINGS.hasClippings(), selectedMenuAction,
+      wereadBookId_[0] != '\0');
 }
 
 ReaderRenderSpec EpubReaderActivity::effectiveRenderSpec(const uint16_t width, const uint16_t height) const {
@@ -4434,7 +4435,7 @@ void EpubReaderActivity::handleFontPreloadPrompt() {
 void EpubReaderActivity::buildMoreActions() {
   using MA = EpubReaderMenuActivity::MenuAction;
   EpubReaderMenuActivity::buildMenuItems(moreItems, !currentPageFootnotes.empty(), !cachedBookmarks.empty(),
-                                         CLIPPINGS.hasClippings());
+                                         CLIPPINGS.hasClippings(), wereadBookId_[0] != '\0');
   moreItems.erase(std::remove_if(moreItems.begin(), moreItems.end(),
                                  [](const auto& item) {
                                    return item.action == MA::SELECT_CHAPTER || item.action == MA::TEXT_SETTINGS;

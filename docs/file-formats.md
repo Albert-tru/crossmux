@@ -779,6 +779,19 @@ location is not migrated or read.
   removes this record; otherwise a positive value is applied once and removed
   after the resulting reader progress is saved atomically. Invalid and
   zero-valued records are removed and use the normal EPUB text start.
+- Per-book `reported-time.bin` is an atomic fixed 8-byte `WRR1` record: `uint32 magic` (`0x31525257`)
+  followed by `uint32 reportedSeconds`, the whole seconds of local reading already credited to WeRead.
+  It lives beside the book's other per-book files and is written through `.part` plus atomic replacement.
+  Local reading time comes from the reading-stats store (`totalReadingMs / 1000`), so the time still owed
+  is `total - reportedSeconds`; a watermark ahead of the total (stats reset or restored from an older
+  backup) means nothing is owed and never wraps. A missing, truncated, or wrong-magic record is treated
+  as "never synced": the baseline is set to leave at most the most recent hour owed, and is stored before
+  anything is sent so retries cannot move it. The watermark advances only by seconds the server accepted
+  in a `/web/book/read` report (each report carries at most 60 s as `rt`, at most 240 reports per sync),
+  and it advances even if the later position read-back fails, because those reports are already credited.
+  Time is only sent with an upload of the local position, never with "use remote", so it cannot overwrite
+  a remote position the user chose to keep. Clearing the WeRead cache removes this record, after which the
+  next sync re-baselines to the most recent hour.
 - Per-book `detail.bin` starts with a fixed 1024-byte `WBD1` header followed
   immediately by the decoded UTF-8 introduction. The version-1 header contains
   `uint32 magic` (`0x31444257`), `uint16 version`, `uint16 headerSize`,

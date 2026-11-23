@@ -55,12 +55,20 @@ class WeReadProgressSyncActivity final : public Activity {
   uint16_t localPageCount_ = 0;
   float remoteFraction_ = 0.0f;
   bool uploadConflict_ = false;
+  // Reading-time bookkeeping for the current book. totalReadSeconds_ is the local lifetime total at
+  // the start of this sync; the watermark is what WeRead has already been credited with.
+  uint32_t totalReadSeconds_ = 0;
+  uint32_t reportedSeconds_ = 0;
+  bool readingTimeTracked_ = false;
+  uint32_t creditedThisSync_ = 0;
   bool wifiActivated_ = false;
   std::atomic<bool> fullRefreshPending_{true};
 
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
   void startSync();
+  void prepareReadingTime();
+  void creditAcceptedReadingTime();
   void advanceSync();
   void beginSelectedDirection();
   void applyRemoteProgress(const WeReadProtocol::RemoteProgress& remote);

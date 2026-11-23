@@ -40,13 +40,15 @@ class EpubReaderMenuActivity final : public UiListActivity {
   };
 
   static void toggleBluetooth();
+  // hasWeReadSync: the open book is a cached WeRead book, whose SYNC row uses WeRead's own session
+  // and so must not depend on KOReader credentials.
   static void buildMenuItems(std::vector<MenuItem>& items, bool hasFootnotes, bool hasBookmarks,
-                             bool hasClippings = false);
+                             bool hasClippings = false, bool hasWeReadSync = false);
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
                                   const uint8_t currentOrientation, const bool hasFootnotes, bool hasBookmarks,
-                                  bool hasClippings, MenuAction& selectedAction);
+                                  bool hasClippings, MenuAction& selectedAction, bool hasWeReadSync = false);
 
   void onEnter() override;
   void onExit() override;

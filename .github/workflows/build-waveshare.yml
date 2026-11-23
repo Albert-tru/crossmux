@@ -1,0 +1,114 @@
+name: Build Waveshare ePaper 3.97
+
+# Minimal, self-contained build for the Waveshare ESP32-S3 ePaper 3.97 target.
+# It needs no repository secrets (the upstream workflows select a private runner via
+# H2O_RUNNER_TOKEN, which a fork does not have), so it runs on a plain GitHub-hosted runner.
+#
+# Trigger it from the Actions tab ("Run workflow"). The firmware is uploaded as a workflow artifact.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_HTTP_RETRIES: 10
+
+jobs:
+  host-tests:
+    # The reading-time arithmetic is pure and host-testable; fail fast before the long firmware build.
+    name: Reading-time unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compile and run the reading-time tests
+        run: |
+          set -euo pipefail
+          # Header-only logic: build the test against GoogleTest without the full simulator tree.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtest-dev cmake g++
+          mkdir -p /tmp/rt && cd /tmp/rt
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(rt CXX)
+          set(CMAKE_CXX_STANDARD 20)
+          find_package(GTest REQUIRED)
+          add_executable(rt "${SRC}/test/weread_webapi/WeReadReadingTimeTest.cpp")
+          target_include_directories(rt PRIVATE "${SRC}/lib/WeReadWebApi/src")
+          target_link_libraries(rt GTest::gtest_main)
+          EOF
+          cmake -S . -B build -DSRC="$GITHUB_WORKSPACE"
+          cmake --build build
+          ./build/rt
+
+  build:
+    name: Build waveshare_epaper_397
+    needs: host-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Isolate PlatformIO toolchains
+        run: echo "PLATFORMIO_CORE_DIR=$RUNNER_TEMP/.platformio-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: uv pip install --system -U pioarduino==6.2.0
+
+      - name: Prepare platform tools
+        run: python scripts/patch_pioarduino_cache.py --prepare-platform
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PLATFORMIO_CORE_DIR }}/.cache
+          key: pio-cache-${{ runner.os }}-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
+          restore-keys: pio-cache-${{ runner.os }}-
+
+      - name: Build firmware
+        run: |
+          set -euo pipefail
+          pio run -e waveshare_epaper_397 | tee pio.log
+
+      - name: Show size
+        run: |
+          {
+            echo "## waveshare_epaper_397 build"
+            echo '```text'
+            grep -E '^Processing |RAM:\s|Flash:\s' pio.log || true
+            echo '```'
+            echo "The app partition is 6,553,600 bytes; stock Nightly leaves only ~248 KB free."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect images
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp .pio/build/waveshare_epaper_397/firmware.bin out/
+          # factory image = bootloader + partitions + app, flashable at 0x0
+          if [ -f .pio/build/waveshare_epaper_397/firmware.factory.bin ]; then
+            cp .pio/build/waveshare_epaper_397/firmware.factory.bin out/
+          fi
+          ls -l out
+          sha256sum out/* | tee out/SHA256SUMS.txt
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v6
+        with:
+          name: waveshare_epaper_397-firmware
+          path: out/
+          if-no-files-found: error

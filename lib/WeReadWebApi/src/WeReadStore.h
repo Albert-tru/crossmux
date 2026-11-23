@@ -21,6 +21,7 @@ constexpr uint32_t kImageWorkMagic = 0x31504957;        // WIP1
 constexpr uint32_t kBookOptionsMagic = 0x314F5257;      // WRO1
 constexpr uint32_t kBookDetailMagic = 0x31444257;       // WBD1
 constexpr uint32_t kInitialProgressMagic = 0x31505257;  // WRP1
+constexpr uint32_t kReportedTimeMagic = 0x31525257;     // WRR1 (WRT1 is the retired TOC magic)
 constexpr uint16_t kIndexVersion = 1;
 constexpr uint16_t kBookOptionsVersion = 1;
 constexpr uint16_t kBookDetailVersion = 1;
@@ -50,6 +51,15 @@ struct InitialProgress {
   uint32_t millionths = 0;
 };
 static_assert(sizeof(InitialProgress) == 8);
+
+// Per-book watermark of reading time already credited to WeRead, in whole seconds. It is a lifetime
+// total on the same scale as ReadingBookStats::totalReadingMs / 1000, so the unsent time is simply
+// (total seconds - reportedSeconds) and survives a failed or interrupted upload without double counting.
+struct ReportedTime {
+  uint32_t magic = kReportedTimeMagic;
+  uint32_t reportedSeconds = 0;
+};
+static_assert(sizeof(ReportedTime) == 8);
 
 struct Session {
   char vid[64] = {};
@@ -223,6 +233,8 @@ bool saveBookOptions(const std::string& bookDir, const BookOptions& options);
 bool loadInitialProgress(const char* bookId, float& fraction);
 bool saveInitialProgress(const char* bookId, float fraction);
 bool clearInitialProgress(const char* bookId);
+bool loadReportedTime(const char* bookId, uint32_t& reportedSeconds);
+bool saveReportedTime(const char* bookId, uint32_t reportedSeconds);
 bool openBookDetail(const std::string& bookDir, BookDetailHeader& header, HalFile& file);
 bool atomicReplace(const std::string& partPath, const std::string& finalPath);
 bool looksLikeZip(const std::string& path);

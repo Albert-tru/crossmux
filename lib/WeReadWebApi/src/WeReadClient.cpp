@@ -1363,7 +1363,7 @@ bool appendEncodedId(char* out, const size_t outSize, size_t& position, char* wo
 bool appendProgressQuery(char* out, const size_t outSize, char* work, const size_t workSize, const char* bookId,
                          const WeReadStore::TocRecord& chapter, const uint32_t chapterOffset, const uint32_t progress,
                          const uint32_t now, const char* psvts, const char* pclts, const char* token, const bool report,
-                         const uint64_t timestampMs, const uint32_t randomNumber) {
+                         const uint64_t timestampMs, const uint32_t randomNumber, const uint32_t readSeconds) {
   size_t position = 0;
   out[0] = '\0';
   if (!makeWebAppId(work, workSize) || !appendText(out, outSize, position, "appId=") ||
@@ -1388,10 +1388,16 @@ bool appendProgressQuery(char* out, const size_t outSize, char* work, const size
     return false;
   }
   if (report) {
-    if (!appendText(out, outSize, position, "&rn=") || !appendUnsigned(out, outSize, position, randomNumber) ||
-        !appendText(out, outSize, position, "&sg=")) {
+    // `rt` (seconds read since the previous report) sorts between `rn` and `sg`; it is omitted at 0 so a
+    // position-only report keeps the exact bytes it had before reading time was supported.
+    if (!appendText(out, outSize, position, "&rn=") || !appendUnsigned(out, outSize, position, randomNumber)) {
       return false;
     }
+    if (readSeconds > 0 &&
+        (!appendText(out, outSize, position, "&rt=") || !appendUnsigned(out, outSize, position, readSeconds))) {
+      return false;
+    }
+    if (!appendText(out, outSize, position, "&sg=")) return false;
     const int sourceLength = snprintf(work, workSize, "%llu%u%s", static_cast<unsigned long long>(timestampMs),
                                       static_cast<unsigned>(randomNumber), token);
     if (sourceLength <= 0 || static_cast<size_t>(sourceLength) >= workSize || !sha256Hex(work, work, workSize) ||
@@ -1408,8 +1414,8 @@ bool appendProgressQuery(char* out, const size_t outSize, char* work, const size
 
 bool makeProgressBody(const char* bookId, const WeReadStore::TocRecord& chapter, const uint32_t chapterOffset,
                       const float localFraction, const char* psvts, const char* pclts, const char* readerToken,
-                      const bool report, char* body, const size_t bodySize, char* work, const size_t workSize,
-                      size_t& written) {
+                      const bool report, const uint32_t readSeconds, char* body, const size_t bodySize, char* work,
+                      const size_t workSize, size_t& written) {
   static constexpr char kDefaultReaderToken[] = "3c5c8717f3daf09iop3423zafeqoi";
   const uint32_t now = TimeUtils::getCurrentValidTimestamp();
   if (now == 0 || !isSafeProtocolToken(bookId) || !isSafeProtocolToken(chapter.chapterUid) ||
@@ -1424,8 +1430,11 @@ bool makeProgressBody(const char* bookId, const WeReadStore::TocRecord& chapter,
   const uint64_t timestampMs =
       report ? static_cast<uint64_t>(now) * 1000ULL + static_cast<uint32_t>(random(0, 1000)) : 0;
 
+  // Reading time only travels on the report request; the enter request never carries it.
+  const uint32_t reportedSeconds = report ? readSeconds : 0;
+
   if (!appendProgressQuery(body, bodySize, work, workSize, bookId, chapter, chapterOffset, progress, now, psvts, pclts,
-                           token, report, timestampMs, randomNumber)) {
+                           token, report, timestampMs, randomNumber, reportedSeconds)) {
     return false;
   }
   char signature[24];
@@ -1460,6 +1469,10 @@ bool makeProgressBody(const char* bookId, const WeReadStore::TocRecord& chapter,
   if (report) {
     if (!appendText(body, bodySize, position, ",\"ts\":") || !appendUnsigned(body, bodySize, position, timestampMs) ||
         !appendText(body, bodySize, position, ",\"rn\":") || !appendUnsigned(body, bodySize, position, randomNumber)) {
+      return false;
+    }
+    if (reportedSeconds > 0 &&
+        (!appendText(body, bodySize, position, ",\"rt\":") || !appendUnsigned(body, bodySize, position, reportedSeconds))) {
       return false;
     }
     const int sourceLength = snprintf(work, workSize, "%llu%u%s", static_cast<unsigned long long>(timestampMs),
@@ -1976,6 +1989,9 @@ void Operation::reset() {
   options_ = {};
   progressSyncInput_ = {};
   progressSyncMode_ = ProgressSyncMode::Compare;
+  timeRemainingSeconds_ = 0;
+  timeSentSeconds_ = 0;
+  timeOnlyUpload_ = false;
   progressSyncResult_ = {};
   session_.clear();
   book_ = {};
@@ -3054,9 +3070,20 @@ Error Operation::decideProgress() {
           chapter_.chapterUid, static_cast<unsigned>(progressChapterOffset_),
           static_cast<unsigned long>(progressSyncInput_.localFraction * 1000000.0f + 0.5f));
   const bool samePosition = sameRemotePosition();
-  const ProgressAction action = progressAction(progressSyncMode_, samePosition);
-  LOG_INF("WR", "progress decision: mode=%u same=%u action=%u", static_cast<unsigned>(progressSyncMode_),
-          static_cast<unsigned>(samePosition), static_cast<unsigned>(action));
+  ProgressAction action = progressAction(progressSyncMode_, samePosition);
+  // Reading time travels on the report request, which also restates the position. When the positions
+  // already match that is harmless, so owed time may still go out. It must never ride on a
+  // "use remote" decision: that report would overwrite the remote position we just chose to keep.
+  const uint32_t budget = WeReadReadingTime::kMaxReportsPerSync * WeReadReadingTime::kMaxSecondsPerReport;
+  timeRemainingSeconds_ = static_cast<uint16_t>(std::min(progressSyncInput_.pendingReadSeconds, budget));
+  if (action == ProgressAction::AlreadySynced && WeReadReadingTime::nextReportSeconds(timeRemainingSeconds_) > 0) {
+    action = ProgressAction::UploadLocal;
+    timeOnlyUpload_ = true;
+  }
+  if (action != ProgressAction::UploadLocal) timeRemainingSeconds_ = 0;
+  LOG_INF("WR", "progress decision: mode=%u same=%u action=%u owedTime=%u", static_cast<unsigned>(progressSyncMode_),
+          static_cast<unsigned>(samePosition), static_cast<unsigned>(action),
+          static_cast<unsigned>(timeRemainingSeconds_));
   switch (action) {
     case ProgressAction::AlreadySynced:
       progressSyncResult_.outcome = ProgressSyncOutcome::AlreadySynced;
@@ -3094,8 +3121,9 @@ Error Operation::fetchProgressReaderOnce() {
 Error Operation::sendProgressOnce(const bool report) {
   size_t bodySize = 0;
   if (!makeProgressBody(book_.bookId, chapter_, progressChapterOffset_, progressSyncInput_.localFraction, psvts_,
-                        imageHost_, previousVid_, report, reinterpret_cast<char*>(ioBuffer_), sizeof(ioBuffer_), url_,
-                        sizeof(url_), bodySize)) {
+                        imageHost_, previousVid_, report,
+                        report ? WeReadReadingTime::nextReportSeconds(timeRemainingSeconds_) : 0,
+                        reinterpret_cast<char*>(ioBuffer_), sizeof(ioBuffer_), url_, sizeof(url_), bodySize)) {
     return Error::Clock;
   }
   SimpleJsonContext context;
@@ -4049,9 +4077,17 @@ Operation::Event Operation::step(const WeReadStore::WorkCallback callback, void*
     }
 
     case Phase::SendProgressReport: {
+      const uint32_t chunk = WeReadReadingTime::nextReportSeconds(timeRemainingSeconds_);
       const Error error = sendProgressOnce(true);
       if (error != Error::Ok) return handleRequestError(error, Phase::SendProgressReport);
       requestSucceeded();
+      // The server accepted this report, so its seconds are credited now, independent of whether the
+      // later read-back verification succeeds.
+      timeSentSeconds_ = static_cast<uint16_t>(timeSentSeconds_ + chunk);
+      timeRemainingSeconds_ = static_cast<uint16_t>(timeRemainingSeconds_ - chunk);
+      LOG_INF("WR", "reading time reported: chunk=%u sent=%u remaining=%u", static_cast<unsigned>(chunk),
+              static_cast<unsigned>(timeSentSeconds_), static_cast<unsigned>(timeRemainingSeconds_));
+      if (WeReadReadingTime::nextReportSeconds(timeRemainingSeconds_) > 0) return Event::None;  // next chunk
       progressVerifyAttempts_ = 0;
       nextActionAt_ = millis() + kNetworkRetryBaseMs;
       phase_ = Phase::VerifyProgress;
@@ -4087,6 +4123,12 @@ Operation::Event Operation::step(const WeReadStore::WorkCallback callback, void*
           if (progressVerifyAttempts_ < kMaxRequestAttempts) {
             nextActionAt_ = millis() + kNetworkRetryBaseMs;
             return Event::None;
+          }
+          if (timeOnlyUpload_ && timeSentSeconds_ > 0 && samePosition) {
+            // Nothing moved, so the server may legitimately keep its old update time. The accepted
+            // reports are what matter here, and the position was already identical.
+            progressSyncResult_.outcome = ProgressSyncOutcome::AlreadySynced;
+            break;
           }
           return fail(Error::Unavailable);
       }
