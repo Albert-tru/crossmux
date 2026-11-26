@@ -13,13 +13,14 @@ namespace WeReadReadingTime {
 
 // WeRead's own web reader reports every ~30 s, each report carrying the seconds elapsed since the
 // previous one. A single report carrying hours is unlike anything the server normally sees, so
-// large backlogs are drained in bounded steps rather than in one request.
-constexpr uint32_t kMaxSecondsPerReport = 60;
+// large backlogs are drained in bounded steps rather than in one request. 30 s matches that cadence;
+// a device log showed that 60 s reports were credited at only about half their claimed value.
+constexpr uint32_t kMaxSecondsPerReport = 30;
 
 // Upper bound on report requests in one sync, so a long backlog cannot keep the radio on for many
-// minutes. 240 reports of up to 60 s drain up to 4 hours per sync; anything left stays owed and goes
+// minutes. 480 reports of up to 30 s drain up to 4 hours per sync; anything left stays owed and goes
 // out on the next sync because the watermark only moves on accepted reports.
-constexpr uint32_t kMaxReportsPerSync = 240;
+constexpr uint32_t kMaxReportsPerSync = 480;
 
 // Callers store the per-sync total in 16 bits; keep that true if either cap above is ever raised.
 static_assert(kMaxReportsPerSync * kMaxSecondsPerReport <= UINT16_MAX, "per-sync time budget must fit 16 bits");

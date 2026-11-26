@@ -787,7 +787,7 @@ location is not migrated or read.
   backup) means nothing is owed and never wraps. A missing, truncated, or wrong-magic record is treated
   as "never synced": the baseline is set to leave at most the most recent hour owed, and is stored before
   anything is sent so retries cannot move it. The watermark advances only by seconds the server accepted
-  in a `/web/book/read` report (each report carries at most 60 s as `rt`, at most 240 reports per sync),
+  in a `/web/book/read` report (each report carries at most 30 s as `rt`, at most 480 reports per sync),
   and it advances even if the later position read-back fails, because those reports are already credited.
   Time is only sent with an upload of the local position, never with "use remote", so it cannot overwrite
   a remote position the user chose to keep. Clearing the WeRead cache removes this record, after which the

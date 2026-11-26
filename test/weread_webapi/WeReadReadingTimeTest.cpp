@@ -42,7 +42,7 @@ TEST(WeReadReadingTime, WatermarkAdvancesAndSaturates) {
 }
 
 TEST(WeReadReadingTime, RepeatedReportsDrainBacklogExactlyOnce) {
-  // 3 hours owed, sent 60 s at a time: every second goes out exactly once.
+  // 3 hours owed, sent 30 s at a time: every second goes out exactly once.
   const uint32_t total = 3 * 3600;
   uint32_t watermark = 0;
   uint64_t sent = 0;
